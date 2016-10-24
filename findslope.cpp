@@ -1,6 +1,15 @@
 #include "findslope.h"
-findslope::findslope() :img(0), imghsv(0), seg_img(0), erode_img(0), dilate_img(0)
+#include "demarcate.h"
+findslope::findslope() :img(0), imghsv(0), seg_img(0), erode_img(0), dilate_img(0), P({ 0, 0 }), angle(NULL)
+, slopearea(0)
 {
+	move.Angle = 0;
+	move.left = 0;
+	move.right = 0;
+	move.forward = 0;
+	move.backward = 0;
+	move.stop = 0;
+	move.stoprotate = 0;
 }
 findslope::~findslope()
 {
@@ -9,6 +18,29 @@ findslope::~findslope()
 	cvReleaseImage(&seg_img);
 	cvReleaseImage(&erode_img);
 	cvReleaseImage(&dilate_img);
+}
+bool findslope::image2hsv(Mat image,IplImage* &outImage)
+{
+	int image_w = image.rows;
+	int image_h = image.cols;
+	img = cvCreateImage(cvSize(image_h, image_w), IPL_DEPTH_8U, 3);
+	erode_img = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 1);
+	dilate_img = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 1);
+	*img = IplImage(image);
+	imghsv = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 3);
+	seg_img = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 1);
+	cvCvtColor(img, outImage, CV_BGR2HSV);
+	return 0;
+}
+bool findslope::imageprocess(IplImage* src,IplImage* &outImage)
+{
+	
+	outImage = cvCreateImage(cvSize(src->width, src->height), IPL_DEPTH_8U, 1);
+	//腐蚀
+	cvErode(src, erode_img, NULL, 2);
+	//膨胀
+	cvDilate(erode_img, outImage, NULL, 1);
+	return 0;
 }
 double findslope::distance(int h, int s, int v)
 {
@@ -34,6 +66,7 @@ double findslope::distance(int h, int s, int v)
 	return distance;
 }
 
+//图像分割
 bool findslope::Segment(IplImage *src, IplImage *dest)
 {
 	//阈值设置
@@ -75,9 +108,10 @@ bool findslope::center_of_gravity(IplImage *src, CvPoint *p)
 	m01 = cvGetSpatialMoment(&moment, 0, 1);
 	p->x = (int)(m10 / m00);
 	p->y = (int)(m01 / m00);
-	printf("x = %d,y = %d\n", p->x, p->y);
+	printf("重心坐标：x = %d,y = %d\n", p->x, p->y);
 	return 0;
 }
+
 //计算颜色模板
 bool findslope:: cal_model(IplImage *src, float *model_H, float *model_S, float *model_V)
 {
@@ -109,19 +143,28 @@ bool findslope:: cal_model(IplImage *src, float *model_H, float *model_S, float 
 	*model_V = (*model_V) / (height*width);
 	return 0;
 }
+
+//识别斜坡
 bool findslope::findslopbox(IplImage *binaryImage)
 {
 	Mat srcImage(binaryImage, 0);
 	std::vector<std::vector<cv::Point> > contours;
 	cv::vector<cv::Vec4i>hierarchy;
+	double boxwidth;
+	double boxheight;
 	//contour_image.setTo(cv::Scalar(255));
 	cv::findContours(srcImage, contours, hierarchy, CV_RETR_LIST, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0));
 	Mat imageContours = Mat::zeros(srcImage.size(), CV_8UC1); //最小外接矩形画布   
 	const int minarea = 1000;
+	int maxarea = 0;
 	for (int i = 0; i < contours.size(); i++)
 	{
 
 		double tmparea = fabs(contourArea(contours[i]));
+		if (tmparea > maxarea)
+		{
+			maxarea = tmparea;
+		}
 		//cout << "tmparea:\n" << tmparea << endl;
 		if (tmparea <minarea)
 		{
@@ -130,11 +173,12 @@ bool findslope::findslopbox(IplImage *binaryImage)
 			i = i - 1;
 		}
 	}
-	std::cout << "contours.size():"<<contours.size() << std::endl;
+	slopearea = maxarea;
+	//std::cout << "contours.size():"<<contours.size() << std::endl;
 	for (int i = 0; i < contours.size(); i++)
 	{
 		double tmparea = fabs(contourArea(contours[i]));
-		cout << "tmparea:\n" << tmparea << endl;
+		//cout << "tmparea:\n" << tmparea << endl;
 		//绘制轮廓  
 		//drawContours(imageContours, contours, i, Scalar(255), 1, 8,hierarchy);
 		//绘制轮廓的最小外结矩形  
@@ -145,29 +189,31 @@ bool findslope::findslopbox(IplImage *binaryImage)
 		{
 			line(imageContours, P[j], P[(j + 1) % 4], Scalar(255), 2);
 		}
-		double a = sqrt((pow(P[0].x - P[1].x, 2)) + pow((P[0].y - P[1].y), 2));
-		double b = sqrt((pow(P[0].x - P[3].x, 2)) + pow((P[0].y - P[3].y), 2));
-		std::cout << "a:" << a << std::endl;
-		std::cout << "b:" << b << std::endl;
-		//添加斜坡特征信息
-		if (a / b >= slope_ratio)
-		{
-			std::cout << "find slope!" << std::endl;
-		}
-		else
-		{
-			std::cout << "no any slope!" << std::endl;
-		}
-
+		boxwidth = sqrt((pow(P[0].x - P[1].x, 2)) + pow((P[0].y - P[1].y), 2));
+		boxheight = sqrt((pow(P[0].x - P[3].x, 2)) + pow((P[0].y - P[3].y), 2));
+		//std::cout << "a:" << a << std::endl;
+		//std::cout << "b:" << b << std::endl;
+		
 	}
-	cv::namedWindow("contour_image", CV_WINDOW_NORMAL);
-	cv::imshow("contour_image", imageContours);
+	//添加斜坡特征信息
+	if (boxwidth / boxheight >= slope_ratio || boxheight / boxwidth >= slope_ratio)
+	{
+		//std::cout << "find slope!" << std::endl;
+		return 0;
+	}
+	else
+	{
+		//std::cout << "no any slope!" << std::endl;
+		return 1;
+	}
+	//cv::namedWindow("contour_image", CV_WINDOW_NORMAL);
+	//cv::imshow("contour_image", imageContours);
 	//*binaryImage=IplImage(srcImage);
-	cv::waitKey(0);//等待操作
-	return 0;
+	//cv::waitKey(0);//等待操作
 }
 
-void findslope::hough_transform(cv::Mat& im, cv::Mat& orig, double* skew)
+//计算旋转角度
+bool findslope::hough_transform(Mat& im, Mat& orig, double* skew)
 {
 	double max_r = sqrt(pow(.5*im.cols, 2) + pow(.5*im.rows, 2));
 	int angleBins = 180;
@@ -190,33 +236,29 @@ void findslope::hough_transform(cv::Mat& im, cv::Mat& orig, double* skew)
 			}
 		}
 	}
-	Mat thresh;
 	normalize(acc, acc, 255, 0, NORM_MINMAX);
 	convertScaleAbs(acc, acc);
 	//namedWindow("acc", CV_WINDOW_NORMAL);
 	//imshow("acc", acc);
-	/*debug
-	Mat cmap;
-	applyColorMap(acc,cmap,COLORMAP_JET);
-	imshow("cmap",cmap);
-	imshow("acc",acc);*/
+
+	
 
 	Point maxLoc;
 	minMaxLoc(acc, 0, 0, 0, &maxLoc);
 	double theta = (double)maxLoc.y / angleBins*CV_PI;
 	double rho = maxLoc.x - max_r;
-	if (abs(sin(theta))<0.000001)//check vertical
+	if (abs(sin(theta))<0.0000001)//check vertical
 	{
 		//when vertical, line equation becomes
 		//x = rho
 		double m = -cos(theta) / sin(theta);
 		Point2d p1 = Point2d(rho + im.cols / 2, 0);
 		Point2d p2 = Point2d(rho + im.cols / 2, im.rows);
-		line(orig, p1, p2, Scalar(0, 0, 255), 1);
+		//line(orig, p1, p2, Scalar(0, 0, 255), 1);
 		*skew = 90;
-		std::cout << "skew angle " << " 90" << std::endl;
-		std::cout << "p1:" << p1 << std::endl;
-		std::cout << "p2:" << p2 << std::endl;
+		//std::cout << "skew angle " << " 90" << std::endl;
+		//std::cout << "p1:" << p1 << std::endl;
+		//std::cout << "p2:" << p2 << std::endl;
 	}
 	else
 	{
@@ -230,52 +272,155 @@ void findslope::hough_transform(cv::Mat& im, cv::Mat& orig, double* skew)
 		double skewangle;
 		skewangle = p1.x - p2.x>0 ? (atan2(p1.y - p2.y, p1.x - p2.x)*180. / CV_PI) : (atan2(p2.y - p1.y, p2.x - p1.x)*180. / CV_PI);
 		*skew = skewangle;
-
-		std::cout << "skew angle " << skewangle << std::endl;
-		std::cout << "p1:" << p1 << std::endl;
-		std::cout << "p2:" << p2 << std::endl;
+		//std::cout << "skew angle " << skewangle << std::endl;
+		//std::cout << "p1:" << p1 << std::endl;
+		//std::cout << "p2:" << p2 << std::endl;
 	}
-	imshow("orig", orig);
-
-
+	//namedWindow("lineslope",WINDOW_NORMAL);
+	//imshow("lineslope", orig);
+	//waitKey(0);
+	return 0;
 }
 
+
+
+//主程序
 bool findslope::findSlopeProcess(Mat image)
 {
-	//重心坐标
-	CvPoint P = { 0, 0 };
-	int image_w = image.rows;
-	int image_h = image.cols;
-	img = cvCreateImage(cvSize(image_h, image_w), IPL_DEPTH_8U, 3);
-	*img = IplImage(image);
-	imghsv = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 3);
-	seg_img = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 1);
-	erode_img = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 1);
-	dilate_img = cvCreateImage(cvSize(img->width, img->height), IPL_DEPTH_8U, 1);
-	cvCvtColor(img, imghsv, CV_BGR2HSV);
+	//图像转hsv
+	if (image2hsv(image,imghsv))
+	{
+     std::cout << "image2hsv failed" << std::endl;
+	}
+	
 	//分割
-	Segment(imghsv, seg_img);
+	if (Segment(imghsv, seg_img))
+	{
+		std::cout << "Segment failed" << std::endl;
+	}
+
+	//图像去燥，腐蚀膨胀
+	if (imageprocess(seg_img,dilate_img))
+	{
+		std::cout << "imageprocess failed" << std::endl;
+	}
+	
+	//识别斜坡
+	if (findslopbox(dilate_img))
+	{
+		std::cout << "no any slope!" << std::endl;
+	}
+	else
+	{
+		std::cout << "find slope!" << std::endl;
+		if (slopearea < SLOPEAREA)
+		{
+			std::cout << "go forward..." << std::endl;
+			move.forward = 1;
+			move.backward = 0;
+		}
+		else
+		{
+			Mat slopeimage(dilate_img, 0);
+			Canny(slopeimage, slopeCanny, 1, 3, 3);
+			//计算旋转角度
+			if (hough_transform(slopeCanny, slopeCanny, &angle))
+			{
+				std::cout << "hough_transform failed" << std::endl;
+			}
+			else
+			{
+
+				if (0 < angle &&89.8>=angle)
+				{
+					move.Angle = -(90 - angle);
+					move.stoprotate = 0; //没有正对斜坡
+					std::cout << "逆时针旋转：" << move.Angle << "度" << std::endl;
+				}
+				if (-89.8 < angle &&0>=angle)
+				{
+					std::cout << "顺时针旋转：" << abs(angle) << "度" << std::endl;
+					move.Angle = abs(angle);
+					move.stoprotate = 1; //没有正对斜坡
+				}
+				//值为正代表逆时针转
+				//值为负代表顺时针转
+				if (abs(abs(angle) - 90) < 0.2)
+				{
+					std::cout << "机器人已正对斜坡" << std::endl;
+					move.Angle = 0;
+					move.stoprotate = 1; //正对斜坡
+					move.left = 0;
+					move.right = 0;
+					move.forward = 0;
+					move.backward = 0;
+					move.stop = 0;
+					//计算斜坡重心
+					if (center_of_gravity(dilate_img, &P))
+					{
+						std::cout << "center_of_gravity failed" << std::endl;
+					}
+					else
+					{
+						demarcate mycamera;
+						cvCircle(img, P, 5, cvScalar(0, 0, 0), 3);
+						int distanceX = P.x -mycamera.cameraX;
+						double wordPx=0;
+						double wordPy = 0;
+						double camera2wordX = 0;
+						double camera2wordY = 0;
+						mycamera.distance(P.x,P.y,wordPx,wordPy); //计算小车斜坡距离信息
+						mycamera.distance(mycamera.cameraX, mycamera.cameraY, camera2wordX, camera2wordY);
+						distanceX = wordPx - mycamera.cameraX;
+						if (distanceX < -0.1)
+						{
+							move.Angle = 0;
+							move.stoprotate = 1; //正对斜坡
+							move.left = distanceX;
+							move.right = 0;
+							move.forward = mycamera.cameraY;
+							move.backward = 0;
+							move.stop = 0;
+							
+							std::cout << "go left..." << std::endl;
+						}
+						if (-0.1 <= distanceX && 0.1 >= distanceX)
+						{
+							move.Angle = 0;
+							move.stoprotate = 1; //正对斜坡
+							move.left = 0;
+							move.right = 0;
+							move.forward = mycamera.cameraY;
+							move.backward = 0;
+							move.stop = 0;
+							std::cout << "机器人到达斜坡中轴线上" << std::endl;
+
+						}
+						if (distanceX > 0.1)
+						{
+							move.Angle = 0;
+							move.stoprotate = 1; //正对斜坡
+							move.left = 0;
+							move.right = distanceX;
+							move.forward = mycamera.cameraY;
+							move.backward = 0;
+							move.stop = 0;
+							std::cout << "go right..." << std::endl;
+						}
+					}
+				}
+			}
+		}
+	}
 	//cvShowImage("Seg_Image", seg_img);
-	//腐蚀
-	cvErode(seg_img, erode_img, NULL, 2);
-	//cvSaveImage("r1_erode.jpg",erode_img); 
 	//cvShowImage("Erode_Image", erode_img);
-	//膨胀
-	cvDilate(erode_img, dilate_img, NULL, 1);
-	//cvSaveImage("r1_dilate.jpg",dilate_img); 
-	cvShowImage("Dilate_Image", dilate_img);
-	//计算图像的重心
-	center_of_gravity(dilate_img, &P);
+	//cvShowImage("Dilate_Image", dilate_img);
 	//在原始图像上标记重心
-	//cvCircle(img, P, 5, cvScalar(0,255,0), 1);
-	cvLine(img, cvPoint((int)(P.x - 8), (int)(P.y)),
-		cvPoint((int)(P.x + 8), (int)(P.y)), CV_RGB(0, 255, 0), 1, 8, 0);
-	cvLine(img, cvPoint((int)(P.x), (int)(P.y - 8)),
-		cvPoint((int)(P.x), (int)(P.y + 8)), CV_RGB(0, 255, 0), 1, 8, 0);
-	//cvSaveImage("center_r.jpg",img); 
-	findslopbox(dilate_img);
+	image = img;
+	//cvNamedWindow("Mark_Image",CV_WINDOW_NORMAL);
 	//cvShowImage("Mark_Image", img);
-	cvWaitKey(0);
+	//cvWaitKey(0);
+	
 	return 0;
 }
 
